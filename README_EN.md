@@ -4,18 +4,30 @@
 
 **Version:** `v0.5.0` — Phase A–F base implementation
 
+> The repository starts from the familiar `LLM` label, but its structural identity is closer to a `DLM (Dynamical Language Model)`.  
+> In other words, the entry point is LLM, while the actual core is a dynamics-driven language system built around state evolution, memory, and adaptation.
+
 Documents:
 - [User Guide](USER_GUIDE.md)
+  - who should use it and how
 - [Roadmap](ROADMAP.md)
+  - what should be built next
 - [Offline Playbook](OFFLINE_PERSONAL_LLM_PLAYBOOK.md)
+  - how to operate it without external LLM services
 - [System Connection Map](SYSTEM_CONNECTION_MAP.md)
+  - boundaries across Atom / Athena / Aton / Pharaoh / User
 - [Experiment Log](EXPERIMENT_LOG.md)
+  - training conditions, sample outputs, drift observations
 
 This is not a Transformer clone.  
 Each incoming token drives the internal state forward via an ODE, coupled to a 4-tier memory hierarchy, with online adaptation built in — a **foundational layer for dynamical language modeling**.
 
 The core philosophy is an `offline-survivable personal cortical core`.
 Large external LLMs may appear as optional teachers, but the engine should remain meaningful even when no network LLM service is available.
+
+In one sentence:
+
+**The main goal is to build a language core that can keep growing from personal corpus and personal memory even when no external LLM service is available.**
 
 ---
 
@@ -38,7 +50,7 @@ Large external LLMs may appear as optional teachers, but the engine should remai
 ## Architecture — 6 Layers
 
 ```
-L0  Token Interface      char → integer ID
+L0  Token Interface      char/byte → integer ID (char or byte mode)
 L1  State Encoder        ID → initial state vector x₀
 L2  Dynamics Core        ODE evolution: context coupling + time-scale separation + refined gating
 L3  Memory               short-term (hidden x) · working (PFC) · Hebbian (long-term) · episodic
@@ -69,7 +81,7 @@ The layer scaffolding is present, but practical maturity is still lower in token
 ```
 Dynamical_LLM_Foundation/
 ├── dynllm/
-│   ├── tokenizer.py          # L0
+│   ├── tokenizer.py          # L0 — DynTokenizer (char) + ByteTokenizer (byte)
 │   ├── state_encoder.py      # L1
 │   ├── dynamics_core.py      # L2 — ContextCoupling, TimescaleSeparator
 │   ├── memory.py             # L3 — WorkingMem, HebbianMem, EpisodicMem
@@ -78,7 +90,8 @@ Dynamical_LLM_Foundation/
 │   ├── model.py              # Integrated DynLLM
 │   ├── personal_memory.py    # Phase E — PersonalMemoryStore, MemoryInjector
 │   ├── distill_bridge.py     # Phase E — DistillBuffer, DistillBridge (optional teacher path)
-│   └── evaluate.py           # Phase E — perplexity, diversity, memory utilization
+│   ├── evaluate.py           # Phase E — perplexity, diversity, memory utilization
+│   └── system_bridge.py      # Phase F — DynLLM ↔ Atom/Athena/Aton/Pharaoh governance contracts
 ├── train.py
 ├── generate.py
 ├── examples/
@@ -190,12 +203,17 @@ python3 scripts/release_check.py
 
 Test categories: tokenizer, state encoder, integrator, dynamics core, memory tiers, stability, readout, online adapter, personal memory, distill bridge, evaluate, memory recall rate, train/generate smoke entrypoints, system bridge, package integrity.
 
+- `memory recall rate`
+  - a rough proxy for how well injected memory is brought back into generation
+- `system bridge / governance contracts`
+  - boundary validation for draft text, confidence, memory sources, and risk tags
+
 Verification numbers should be read by environment:
 
 | Scope | Command | Meaning | Current result |
 |------|------|------|-----------|
 | smoke baseline | `python3 -m pytest -q tests` | conservative local baseline | `6 passed, 2 skipped` |
-| torch full suite | internal pytest inside `release_check.py` | broader runtime suite on torch-enabled environment | `71 passed` |
+| torch full suite | internal pytest inside `release_check.py` | broader runtime suite on torch-enabled environment | `81 passed` |
 | release gate | `python3 scripts/release_check.py` | package identity + signature + tests | `OK` |
 
 The `skip` case is the conservative behavior when `torch` is not available in the local environment.
@@ -220,3 +238,17 @@ python3 scripts/verify_signature.py     # verify
 ```
 
 Details: [BLOCKCHAIN_INFO_EN.md](BLOCKCHAIN_INFO_EN.md)
+
+## Tokenizer Usage Notes
+
+The project currently supports two tokenizer modes:
+
+- `DynTokenizer`
+  - corpus-dependent char-level tokenizer
+- `ByteTokenizer`
+  - fixed 260-vocab byte-level tokenizer
+
+Suggested starting points:
+
+- small personal corpus + char-level: `20-50 epochs`
+- byte-level Korean: usually needs longer runs than char-level, so start by observing `30-80 epochs`

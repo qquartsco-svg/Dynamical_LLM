@@ -79,7 +79,8 @@ Dynamical_LLM_Foundation/
 │   ├── model.py              # 전체 통합 DynLLM
 │   ├── personal_memory.py    # Phase E — PersonalMemoryStore, MemoryInjector
 │   ├── distill_bridge.py     # Phase E — DistillBuffer, DistillBridge (optional teacher path)
-│   └── evaluate.py           # Phase E — perplexity, diversity, memory util
+│   ├── evaluate.py           # Phase E — perplexity, diversity, memory util
+│   └── system_bridge.py      # Phase F — DynLLM ↔ Atom/Athena/Aton/Pharaoh 거버넌스 계약
 ├── train.py
 ├── generate.py
 ├── examples/
@@ -220,11 +221,11 @@ python3 scripts/release_check.py
 
 | 구분 | 명령 | 의미 | 현재 결과 |
 |------|------|------|-----------|
-| smoke baseline | `python3 -m pytest -q tests` | 최소 로컬 환경에서의 보수적 확인 | `6 passed, 2 skipped` |
-| torch full suite | `python3 scripts/release_check.py` 내부 pytest | torch 런타임에서의 전체 suite | `71 passed` |
+| torch full suite | `python3 scripts/release_check.py` 내부 pytest | torch 런타임에서의 전체 suite | **81 passed** |
 | release gate | `python3 scripts/release_check.py` | 패키지 정합성 + 서명 + 테스트 통합 체크 | `OK` |
+| 서명 검증 | `python3 scripts/verify_signature.py` | 39개 파일 해시 일치 여부 | `passed=39 failed=0 missing=0` |
 
-여기서 `skip`은 `torch`가 없는 환경에서 runtime 테스트를 보수적으로 건너뛰는 경우를 뜻한다.
+`torch`가 없는 환경에서는 runtime 테스트가 보수적으로 skip될 수 있다.
 
 ---
 
@@ -254,6 +255,24 @@ python3 train.py --byte --epochs 20
 # byte-level 생성
 python3 generate.py --byte "안녕하세요"
 ```
+
+---
+
+## 실험 결과 요약
+
+[EXPERIMENT_LOG.md](EXPERIMENT_LOG.md) 에 상세 기록. 아래는 핵심만.
+
+| 실험 | tokenizer | corpus | loss drop | final ppl | time (CPU) |
+|------|-----------|--------|-----------|-----------|------------|
+| 1 | char(22) | EN 630자 | 0.54 | 9.1 | 90s |
+| 2 | byte(260) | EN 630자 | 1.26 | 7.5 | 77s |
+| 3 | byte(260) | KR 1845바이트 | 2.23 | 2.5 | 239s |
+
+핵심 관찰:
+- ODE dynamics core가 실제로 학습한다 — 모든 실험에서 loss 일관 하락
+- 감쇠(λ)가 자동 적응 — 한국어에서 0.44까지 상승 (모델이 안정점을 스스로 찾음)
+- ByteTokenizer가 char보다 convergence 2.3배 빠름
+- 추론 속도: **~1,170 tok/s** (CPU, 메모리 OFF) / **~950 tok/s** (메모리 ON)
 
 ---
 
