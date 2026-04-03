@@ -23,7 +23,7 @@ from torch.utils.data import Dataset, DataLoader
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from dynllm.tokenizer import DynTokenizer
+from dynllm.tokenizer import DynTokenizer, ByteTokenizer
 from dynllm.model import DynLLM, DynLLMConfig
 
 
@@ -75,13 +75,18 @@ def train(
     save_dir: Path = None,
     use_timescale: bool = True,
     context_window: int = 16,
+    use_byte_tokenizer: bool = False,
 ):
     device_name = "mps" if torch.backends.mps.is_available() else "cpu"
     device = torch.device(device_name)
     print(f"Device: {device_name}")
 
-    tokenizer = DynTokenizer().fit([text])
-    print(f"Vocab: {tokenizer.vocab_size} chars")
+    if use_byte_tokenizer:
+        tokenizer = ByteTokenizer()
+        print(f"Vocab: {tokenizer.vocab_size} (byte-level, fixed)")
+    else:
+        tokenizer = DynTokenizer().fit([text])
+        print(f"Vocab: {tokenizer.vocab_size} (char-level)")
 
     dataset = CharDataset(text, tokenizer, seq_len=seq_len)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
@@ -203,6 +208,7 @@ def main():
     parser.add_argument("--save", type=str, default=None, help="Directory to save checkpoints")
     parser.add_argument("--context-window", type=int, default=16)
     parser.add_argument("--no-timescale", action="store_true", help="Disable fast/slow separation")
+    parser.add_argument("--byte", action="store_true", help="Use byte-level tokenizer (fixed 260 vocab)")
     args = parser.parse_args()
 
     save_dir = Path(args.save) if args.save else None
@@ -228,6 +234,7 @@ def main():
         save_dir=save_dir,
         use_timescale=not args.no_timescale,
         context_window=args.context_window,
+        use_byte_tokenizer=args.byte,
     )
 
 

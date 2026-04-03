@@ -1,6 +1,6 @@
 """
 Dynamical LLM Foundation — dynllm
-v0.5.0 (Phase A–E 완료)
+v0.5.0 (Phase A–F base implementation)
 
 대뇌피질형 동역학 언어 엔진.
 Transformer 대신 ODE 상태 진화로 시퀀스를 처리한다.
@@ -17,6 +17,7 @@ Transformer 대신 ODE 상태 진화로 시퀀스를 처리한다.
   --  personal_memory    PersonalMemoryStore, MemoryInjector (Phase E)
   --  distill_bridge     DistillBuffer, DistillBridge (Phase E)
   --  evaluate           perplexity, diversity, memory_utilization (Phase E)
+  --  system_bridge      DynLLM <-> Atom/Athena/Aton/Pharaoh contracts
 """
 __version__ = "0.5.0"
-__codename__ = "Phase A-E — Foundation + Personalization"
+__codename__ = "Phase A-F — Foundation + Personalization + Governance"

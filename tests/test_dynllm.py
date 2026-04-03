@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from dynllm.tokenizer import DynTokenizer
+from dynllm.tokenizer import DynTokenizer, ByteTokenizer, load_tokenizer
 from dynllm.state_encoder import StateEncoder
 from dynllm.integrator import rk4_step, euler_step
 from dynllm.dynamics_core import (
@@ -525,6 +525,85 @@ class TestEvaluate:
         util = compute_memory_utilization(model)
         assert util["has_memory"]
         assert util["hebbian_utilization"] == 0.0
+
+    def test_memory_recall_rate(self):
+        from dynllm.evaluate import compute_memory_recall_rate
+        cfg = DynLLMConfig(vocab_size=32, d_state=16, use_memory=True,
+                           use_timescale_sep=False)
+        model = DynLLM(cfg)
+
+        target = torch.randn(16)
+        model.memory.hebbian.store(target)
+        model.memory.episodic.store_episode(target.unsqueeze(0).repeat(4, 1))
+
+        report = compute_memory_recall_rate(model, cues=[target], targets=[target])
+        assert report["has_memory"]
+        assert report["n_trials"] == 1
+        assert 0.0 <= report["overall_recall_rate_0_1"] <= 1.0
+
+
+# ━━━━━━━━━━━━━━ ByteTokenizer ━━━━━━━━━━━━━━
+
+class TestByteTokenizer:
+    def test_encode_decode_ascii(self):
+        tok = ByteTokenizer()
+        ids = tok.encode("hello", add_bos=True, add_eos=True)
+        assert ids[0] == 1  # BOS
+        assert ids[-1] == 2  # EOS
+        assert tok.decode(ids) == "hello"
+
+    def test_encode_decode_korean(self):
+        tok = ByteTokenizer()
+        text = "안녕하세요"
+        ids = tok.encode(text, add_bos=False, add_eos=False)
+        assert len(ids) == len(text.encode("utf-8"))  # 15 bytes
+        assert tok.decode(ids) == text
+
+    def test_fixed_vocab(self):
+        tok = ByteTokenizer()
+        assert tok.vocab_size == 260  # 256 + 4 special
+
+    def test_no_fit_needed(self):
+        tok = ByteTokenizer()
+        same = tok.fit(["anything"])
+        assert same is tok
+        assert tok.vocab_size == 260
+
+    def test_save_load(self, tmp_path):
+        tok = ByteTokenizer()
+        path = tmp_path / "tok.json"
+        tok.save(path)
+        loaded = ByteTokenizer.load(path)
+        assert loaded.vocab_size == 260
+        assert loaded.decode(loaded.encode("test")) == "test"
+
+    def test_unified_loader_byte(self, tmp_path):
+        tok = ByteTokenizer()
+        path = tmp_path / "tok.json"
+        tok.save(path)
+        loaded = load_tokenizer(path)
+        assert isinstance(loaded, ByteTokenizer)
+
+    def test_unified_loader_char(self, tmp_path):
+        tok = DynTokenizer().fit(["abc"])
+        path = tmp_path / "tok.json"
+        tok.save(path)
+        loaded = load_tokenizer(path)
+        assert isinstance(loaded, DynTokenizer)
+
+    def test_mode_property(self):
+        assert ByteTokenizer().mode == "byte"
+        assert DynTokenizer().fit(["a"]).mode == "char"
+
+    def test_model_with_byte_tokenizer(self):
+        tok = ByteTokenizer()
+        cfg = DynLLMConfig(vocab_size=tok.vocab_size, d_state=32, use_memory=False)
+        model = DynLLM(cfg)
+        text = "hello 안녕"
+        ids = tok.encode(text, add_bos=False, add_eos=False)
+        x = torch.tensor([ids])
+        logits = model(x)
+        assert logits.shape == (1, len(ids), tok.vocab_size)
 
 
 if __name__ == "__main__":

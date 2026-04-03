@@ -2,10 +2,20 @@
 
 # Dynamical LLM Foundation
 
-**Version:** `v0.5.0` — Phase A–E base implementation
+**Version:** `v0.5.0` — Phase A–F base implementation
+
+Documents:
+- [User Guide](USER_GUIDE.md)
+- [Roadmap](ROADMAP.md)
+- [Offline Playbook](OFFLINE_PERSONAL_LLM_PLAYBOOK.md)
+- [System Connection Map](SYSTEM_CONNECTION_MAP.md)
+- [Experiment Log](EXPERIMENT_LOG.md)
 
 This is not a Transformer clone.  
 Each incoming token drives the internal state forward via an ODE, coupled to a 4-tier memory hierarchy, with online adaptation built in — a **foundational layer for dynamical language modeling**.
+
+The core philosophy is an `offline-survivable personal cortical core`.
+Large external LLMs may appear as optional teachers, but the engine should remain meaningful even when no network LLM service is available.
 
 ---
 
@@ -47,6 +57,10 @@ L5  Online Adaptation    fast/slow weights + trust gate + consolidation schedule
 | C | Memory enhancement | SelectiveRecall, EpisodicMemory, bidirectional WM ↔ Dynamics feedback |
 | D | Online adaptation | FastWeightDecay, StateAdapter, ConsolidationScheduler, RollbackPolicy |
 | E | Personalization + external bridge readiness | PersonalMemoryStore, MemoryInjector, DistillBridge |
+| F | System governance linkage | `system_bridge.py`, boundary contracts for Atom/Athena/Aton/Pharaoh |
+
+This table describes the `base implementation` state.  
+The layer scaffolding is present, but practical maturity is still lower in tokenizer quality, training evidence, connectors, and benchmarks.
 
 ---
 
@@ -63,11 +77,17 @@ Dynamical_LLM_Foundation/
 │   ├── stability.py          # TrustGate, VelocityMonitor, RollbackPolicy
 │   ├── model.py              # Integrated DynLLM
 │   ├── personal_memory.py    # Phase E — PersonalMemoryStore, MemoryInjector
-│   ├── distill_bridge.py     # Phase E — DistillBuffer, DistillBridge
+│   ├── distill_bridge.py     # Phase E — DistillBuffer, DistillBridge (optional teacher path)
 │   └── evaluate.py           # Phase E — perplexity, diversity, memory utilization
 ├── train.py
 ├── generate.py
-└── tests/ (64 tests)
+├── examples/
+│   └── run_dlm.py
+└── tests/
+    ├── test_dynllm.py
+    ├── test_smoke_entrypoints.py
+    ├── test_system_bridge.py
+    └── test_package_integrity.py
 ```
 
 ---
@@ -86,6 +106,9 @@ python3 train.py --corpus mytext.txt --epochs 50 --save ckpt.pt
 # Generate
 python3 generate.py "hello world"
 python3 generate.py "hello" --model ckpt.pt --max_tokens 200
+
+# Minimal end-to-end example
+python3 examples/run_dlm.py
 ```
 
 ```python
@@ -118,12 +141,28 @@ It is closer to:
 
 Its current value therefore leans more toward personalization, interpretability, and controllable dynamics than raw benchmark competition.
 
+## Offline Personal LLM Strategy
+
+This engine should be read in two modes:
+
+- `teacher-assisted`
+  - an external LLM or internal library may provide distillation examples
+- `offline-first`
+  - the model grows from personal corpus, personal memory, and repeated local training only
+
+Important points:
+
+- `distill_bridge.py` is optional
+- the primary path is `train.py + personal_memory.py + generate.py`
+- the engine should remain usable even with no external teacher
+- its strongest product value is a personal language core, not an API wrapper
+
 ---
 
 ## External Bridge Readiness
 
 Phase E already includes `personal_memory.py` and `distill_bridge.py`,
-so the repository is ready to connect personal memory and teacher-style distillation flows.
+so the repository is ready to connect personal memory and optional teacher-style distillation flows.
 However, `Atom.connectors.dynllm_connector` itself is not shipped inside this repository.
 
 ```python
@@ -149,14 +188,24 @@ python3 -m pytest tests/ -q
 python3 scripts/release_check.py
 ```
 
-Test categories: tokenizer, state encoder, integrator, dynamics core, memory tiers, stability, readout, online adapter, personal memory, distill bridge, evaluate, train/generate smoke entrypoints, package integrity.
+Test categories: tokenizer, state encoder, integrator, dynamics core, memory tiers, stability, readout, online adapter, personal memory, distill bridge, evaluate, memory recall rate, train/generate smoke entrypoints, system bridge, package integrity.
+
+Verification numbers should be read by environment:
+
+| Scope | Command | Meaning | Current result |
+|------|------|------|-----------|
+| smoke baseline | `python3 -m pytest -q tests` | conservative local baseline | `6 passed, 2 skipped` |
+| torch full suite | internal pytest inside `release_check.py` | broader runtime suite on torch-enabled environment | `71 passed` |
+| release gate | `python3 scripts/release_check.py` | package identity + signature + tests | `OK` |
+
+The `skip` case is the conservative behavior when `torch` is not available in the local environment.
 
 ---
 
 ## Limits
 
 - Not designed to match large-scale pretrained Transformer performance
-- Character-level tokenizer only — subword upgrade is post-Phase-E
+- Character-level tokenizer only — subword upgrade remains a next-step priority after the current base implementation
 - Long-horizon drift control is partially addressed via TrustGate + RollbackPolicy
 - Large corpus training not yet benchmarked
 - Current product value is closer to a personalizable dynamics-based language engine base than a finished commercial LLM

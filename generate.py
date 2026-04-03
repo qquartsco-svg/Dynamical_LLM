@@ -19,26 +19,32 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from dynllm.tokenizer import DynTokenizer
+from dynllm.tokenizer import DynTokenizer, ByteTokenizer, load_tokenizer
 from dynllm.model import DynLLM, DynLLMConfig
 
 
 def load_or_create(
     model_path: str = None,
     tokenizer_path: str = None,
-) -> tuple[DynLLM, DynTokenizer]:
+    use_byte: bool = False,
+) -> tuple[DynLLM, DynTokenizer | ByteTokenizer]:
     """모델+토크나이저 로드. 없으면 기본 생성."""
     if model_path and Path(model_path).exists():
         model = DynLLM.load(Path(model_path))
         tok_p = Path(tokenizer_path) if tokenizer_path else Path(model_path).parent / "tokenizer.json"
         if tok_p.exists():
-            tok = DynTokenizer.load(tok_p)
+            tok = load_tokenizer(tok_p)
+        elif use_byte:
+            tok = ByteTokenizer()
         else:
             tok = DynTokenizer().fit(["abcdefghijklmnopqrstuvwxyz .,'!?\n"])
         return model, tok
 
-    print("[No saved model — creating minimal untrained model]")
-    tok = DynTokenizer().fit(["abcdefghijklmnopqrstuvwxyz .,'!?\n"])
+    if use_byte:
+        tok = ByteTokenizer()
+    else:
+        tok = DynTokenizer().fit(["abcdefghijklmnopqrstuvwxyz .,'!?\n"])
+    print(f"[No saved model — creating minimal untrained model ({tok.mode})]")
     cfg = DynLLMConfig(vocab_size=tok.vocab_size, d_state=64, use_memory=False)
     model = DynLLM(cfg)
     return model, tok
@@ -91,9 +97,10 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--interactive", action="store_true")
+    parser.add_argument("--byte", action="store_true", help="Use byte-level tokenizer")
     args = parser.parse_args()
 
-    model, tok = load_or_create(args.model, args.tokenizer)
+    model, tok = load_or_create(args.model, args.tokenizer, use_byte=args.byte)
 
     if args.interactive:
         interactive(model, tok)

@@ -5,6 +5,7 @@ DynLLM 평가 도구
   - Perplexity (next-token prediction 품질)
   - Generation diversity (생성 다양성)
   - Memory utilization (메모리 활용도)
+  - Memory recall rate (기억 회상 적합도)
   - Adaptation gain (온라인 적응 효과)
 """
 from __future__ import annotations
@@ -115,6 +116,69 @@ def compute_memory_utilization(model: DynLLM) -> dict:
         "episodic_stored": ep.n_stored.item(),
         "episodic_capacity": ep.n_episodes,
         "episodic_utilization": min(ep.n_stored.item(), ep.n_episodes) / max(ep.n_episodes, 1),
+    }
+
+
+def compute_memory_recall_rate(
+    model: DynLLM,
+    cues: list[torch.Tensor],
+    targets: list[torch.Tensor],
+) -> dict:
+    """
+    메모리 회상 적합도 평가.
+
+    cue -> recalled pattern 이 target과 얼마나 닮았는지 cosine similarity로 측정한다.
+    Hebbian selective recall과 episodic recall을 분리해서 본다.
+    """
+    if model.memory is None:
+        return {
+            "has_memory": False,
+            "n_trials": 0,
+            "hebbian_recall_rate_0_1": 0.0,
+            "episodic_recall_rate_0_1": 0.0,
+            "overall_recall_rate_0_1": 0.0,
+        }
+
+    if len(cues) != len(targets):
+        raise ValueError("cues and targets must have the same length")
+
+    if not cues:
+        return {
+            "has_memory": True,
+            "n_trials": 0,
+            "hebbian_recall_rate_0_1": 0.0,
+            "episodic_recall_rate_0_1": 0.0,
+            "overall_recall_rate_0_1": 0.0,
+        }
+
+    device = next(model.parameters()).device
+    hebbian_scores: list[float] = []
+    episodic_scores: list[float] = []
+
+    for cue, target in zip(cues, targets):
+        cue_b = cue.to(device).reshape(1, -1)
+        target_b = target.to(device).reshape(1, -1)
+
+        with torch.no_grad():
+            hebbian = model.memory.hebbian.selective_recall(cue_b)
+            episodic = model.memory.episodic.recall_episode(cue_b)
+
+        heb_score = F.cosine_similarity(hebbian, target_b, dim=-1).mean().item()
+        epi_score = F.cosine_similarity(episodic, target_b, dim=-1).mean().item()
+
+        hebbian_scores.append((heb_score + 1.0) / 2.0)
+        episodic_scores.append((epi_score + 1.0) / 2.0)
+
+    heb_mean = sum(hebbian_scores) / len(hebbian_scores)
+    epi_mean = sum(episodic_scores) / len(episodic_scores)
+    overall = 0.5 * (heb_mean + epi_mean)
+
+    return {
+        "has_memory": True,
+        "n_trials": len(cues),
+        "hebbian_recall_rate_0_1": heb_mean,
+        "episodic_recall_rate_0_1": epi_mean,
+        "overall_recall_rate_0_1": overall,
     }
 
 
