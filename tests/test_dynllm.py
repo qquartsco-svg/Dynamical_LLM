@@ -606,5 +606,304 @@ class TestByteTokenizer:
         assert logits.shape == (1, len(ids), tok.vocab_size)
 
 
+# ━━━━━━━━━━━━━━ Phase G: MemoryRank Adapter ━━━━━━━━━━━━━━
+
+class TestMemoryGraph:
+    def test_add_nodes_and_edges(self):
+        from dynllm.memory_rank_adapter import MemoryGraph, MemoryNodeAttrs
+        g = MemoryGraph()
+        g.add_node("a", MemoryNodeAttrs(recency=1.0, frequency=0.5))
+        g.add_node("b", MemoryNodeAttrs(recency=0.5, frequency=0.2))
+        g.add_edge("a", "b", weight=0.8)
+        assert g.n_nodes == 2
+        assert g.n_edges == 1
+
+    def test_pagerank_basic(self):
+        from dynllm.memory_rank_adapter import MemoryGraph, MemoryNodeAttrs
+        g = MemoryGraph()
+        g.add_node("a", MemoryNodeAttrs(recency=1.0))
+        g.add_node("b", MemoryNodeAttrs(recency=0.5))
+        g.add_node("c", MemoryNodeAttrs(recency=0.3))
+        g.add_edge("a", "b", 1.0)
+        g.add_edge("b", "c", 1.0)
+        g.add_edge("c", "a", 1.0)
+        ranks = g.compute_pagerank()
+        assert len(ranks) == 3
+        assert abs(sum(ranks.values()) - 1.0) < 0.01
+
+    def test_pagerank_cache(self):
+        from dynllm.memory_rank_adapter import MemoryGraph, MemoryNodeAttrs
+        g = MemoryGraph()
+        g.add_node("x", MemoryNodeAttrs(recency=1.0))
+        g.add_node("y", MemoryNodeAttrs(recency=0.5))
+        g.add_edge("x", "y", 1.0)
+        r1 = g.compute_pagerank()
+        r2 = g.compute_pagerank()
+        assert r1 is r2  # cached
+
+    def test_register_pattern(self):
+        from dynllm.memory_rank_adapter import MemoryGraph
+        g = MemoryGraph()
+        g.register_pattern("p0", torch.randn(16))
+        g.register_pattern("p1", torch.randn(16))
+        assert g.n_nodes == 2
+        assert g.n_edges >= 1  # temporal edge
+
+    def test_rerank_candidates(self):
+        from dynllm.memory_rank_adapter import MemoryGraph, MemoryNodeAttrs
+        g = MemoryGraph()
+        for i in range(5):
+            g.add_node(f"heb_{i}", MemoryNodeAttrs(recency=1.0 - i * 0.1))
+        g.add_edge("heb_0", "heb_1", 1.0)
+        g.add_edge("heb_1", "heb_2", 1.0)
+        g.add_edge("heb_2", "heb_0", 1.0)
+
+        reranked = g.rerank_candidates(
+            ["heb_3", "heb_0", "heb_4"],
+            [0.9, 0.3, 0.8],
+        )
+        assert len(reranked) == 3
+        assert all(isinstance(r[1], float) for r in reranked)
+
+    def test_diagnostics(self):
+        from dynllm.memory_rank_adapter import MemoryGraph
+        g = MemoryGraph()
+        g.register_pattern("a", torch.randn(8))
+        g.register_pattern("b", torch.randn(8))
+        diag = g.diagnostics()
+        assert "n_nodes" in diag and "n_edges" in diag
+
+    def test_state_dict_roundtrip(self):
+        from dynllm.memory_rank_adapter import MemoryGraph
+        g = MemoryGraph()
+        g.register_pattern("a", torch.randn(8))
+        g.register_pattern("b", torch.randn(8))
+        state = g.state_dict()
+
+        g2 = MemoryGraph()
+        g2.load_state_dict(state)
+        assert g2.n_nodes == g.n_nodes
+
+
+class TestRankedSelectiveRecall:
+    def test_ranked_recall(self):
+        from dynllm.memory_rank_adapter import MemoryGraph, MemoryNodeAttrs
+        cfg = MemoryConfig(d_state=16, selective_top_k=2)
+        heb = HebbianMemory(cfg)
+        graph = MemoryGraph()
+
+        for i in range(5):
+            p = torch.randn(16)
+            heb.store(p)
+            ptr = (heb.store_ptr.item() - 1) % heb.capacity
+            graph.register_pattern(f"heb_{ptr}", p)
+
+        result = heb.ranked_selective_recall(torch.randn(1, 16), graph)
+        assert result.shape == (1, 16)
+
+    def test_ranked_recall_empty_graph(self):
+        from dynllm.memory_rank_adapter import MemoryGraph
+        cfg = MemoryConfig(d_state=16, selective_top_k=2)
+        heb = HebbianMemory(cfg)
+        for _ in range(3):
+            heb.store(torch.randn(16))
+        result = heb.ranked_selective_recall(torch.randn(1, 16), MemoryGraph())
+        assert result.shape == (1, 16)
+
+
+class TestMemorySystemWithGraph:
+    def test_step_with_graph(self):
+        from dynllm.memory_rank_adapter import MemoryGraph
+        cfg = MemoryConfig(d_state=32, n_working_slots=4)
+        graph = MemoryGraph()
+        mem = MemorySystem(cfg, graph=graph)
+        slots, acts = mem.init_state(2, torch.device("cpu"))
+
+        for t in range(10):
+            x = torch.randn(2, 32)
+            readout, slots, acts = mem.step(
+                x, slots, acts, store_to_hebbian=(t % 3 == 0),
+            )
+            assert readout.shape == (2, 32)
+
+        assert graph.n_nodes > 0
+
+
+# ━━━━━━━━━━━━━━ Phase G: Diagnostics ━━━━━━━━━━━━━━
+
+class TestConvergenceMonitor:
+    def test_record_and_analyze(self):
+        from dynllm.diagnostics import ConvergenceMonitor
+        cm = ConvergenceMonitor(window=20)
+        for i in range(30):
+            cm.record(10.0 / (i + 1))
+        result = cm.analyze()
+        assert result.stable
+        assert result.verdict in ("converging", "converging_fast", "plateau")
+
+    def test_diverging(self):
+        from dynllm.diagnostics import ConvergenceMonitor
+        cm = ConvergenceMonitor(window=10)
+        for i in range(15):
+            cm.record(1.0 + i * 2.0)
+        result = cm.analyze()
+        assert result.verdict == "diverging"
+
+    def test_insufficient_data(self):
+        from dynllm.diagnostics import ConvergenceMonitor
+        cm = ConvergenceMonitor()
+        cm.record(1.0)
+        result = cm.analyze()
+        assert result.verdict == "insufficient_data"
+
+
+class TestEntropyAnalyzer:
+    def test_uniform_distribution(self):
+        from dynllm.diagnostics import EntropyAnalyzer
+        ea = EntropyAnalyzer()
+        uniform = torch.ones(100) / 100
+        result = ea.analyze_distribution(uniform)
+        assert result.normalized_entropy > 0.95
+
+    def test_peaked_distribution(self):
+        from dynllm.diagnostics import EntropyAnalyzer
+        ea = EntropyAnalyzer()
+        peaked = torch.zeros(100)
+        peaked[0] = 1.0
+        result = ea.analyze_distribution(peaked)
+        assert result.normalized_entropy < 0.05
+
+    def test_logits_analysis(self):
+        from dynllm.diagnostics import EntropyAnalyzer
+        ea = EntropyAnalyzer()
+        logits = torch.randn(2, 50)
+        result = ea.analyze_logits(logits)
+        assert result.entropy > 0
+
+    def test_trend(self):
+        from dynllm.diagnostics import EntropyAnalyzer
+        ea = EntropyAnalyzer()
+        for i in range(10):
+            ea.analyze_distribution(torch.ones(50) / 50)
+        trend = ea.entropy_trend()
+        assert trend["trend"] in ("increasing", "decreasing", "stable")
+
+
+class TestIntegrationDiagnostic:
+    def test_small_matrix(self):
+        from dynllm.diagnostics import IntegrationDiagnostic
+        diag = IntegrationDiagnostic()
+        W = torch.randn(8, 8)
+        result = diag.analyze_coupling(W)
+        assert result.spectral_gap >= 0
+        assert result.effective_rank >= 0
+
+    def test_identity_matrix(self):
+        from dynllm.diagnostics import IntegrationDiagnostic
+        diag = IntegrationDiagnostic()
+        result = diag.analyze_coupling(torch.eye(4))
+        assert result.spectral_gap == 0.0  # all eigenvalues = 1
+
+
+class TestDynLLMDiagnostics:
+    def test_full_diagnostic(self):
+        from dynllm.diagnostics import DynLLMDiagnostics
+        diag = DynLLMDiagnostics()
+        for i in range(20):
+            diag.record_loss(5.0 / (i + 1))
+        diag.record_logits(torch.randn(2, 64))
+        report = diag.full_diagnostic(coupling_matrix=torch.randn(16, 16))
+        assert "convergence" in report
+        assert "entropy" in report
+        assert "integration" in report
+
+
+# ━━━━━━━━━━━━━━ Phase G: Model Integration ━━━━━━━━━━━━━━
+
+class TestDynLLMWithEngines:
+    def test_forward_with_memory_rank(self):
+        cfg = DynLLMConfig(
+            vocab_size=32, d_state=32, use_memory=True,
+            use_timescale_sep=False, use_memory_rank=True,
+        )
+        model = DynLLM(cfg)
+        model.train()
+        logits = model(torch.randint(1, 32, (2, 8)))
+        assert logits.shape == (2, 8, 32)
+        assert model.memory_graph is not None
+
+    def test_forward_with_diagnostics(self):
+        cfg = DynLLMConfig(
+            vocab_size=32, d_state=32, use_memory=False,
+            use_timescale_sep=False, use_diagnostics=True,
+        )
+        model = DynLLM(cfg)
+        logits = model(torch.randint(1, 32, (2, 8)))
+        report = model.run_diagnostics(loss=3.5, logits=logits)
+        assert "convergence" in report
+
+    def test_forward_with_all_engines(self):
+        cfg = DynLLMConfig(
+            vocab_size=32, d_state=32, use_memory=True,
+            use_timescale_sep=True, context_window=4,
+            use_memory_rank=True, use_diagnostics=True,
+        )
+        model = DynLLM(cfg)
+        model.train()
+        logits = model(torch.randint(1, 32, (2, 6)))
+        assert logits.shape == (2, 6, 32)
+        report = model.run_diagnostics(loss=2.0, logits=logits)
+        assert "convergence" in report
+
+    def test_diagnostics_disabled(self):
+        cfg = DynLLMConfig(
+            vocab_size=32, d_state=32, use_memory=False,
+            use_timescale_sep=False, use_diagnostics=False,
+        )
+        model = DynLLM(cfg)
+        report = model.run_diagnostics()
+        assert report == {"diagnostics": "disabled"}
+
+
+class TestPersonalMemoryRanked:
+    def test_link_crystals(self, tmp_path):
+        from dynllm.personal_memory import PersonalMemoryStore
+        store = PersonalMemoryStore(db_path=tmp_path / "ranked.db")
+        v1 = torch.randn(16)
+        v2 = torch.randn(16)
+        id1 = store.store_crystal("pattern_a", v1, importance=0.8)
+        id2 = store.store_crystal("pattern_b", v2, importance=0.6)
+        store.link_crystals(id1, id2, weight=1.0, link_type="temporal")
+        store.link_crystals(id2, id1, weight=0.5, link_type="similar")
+        store.close()
+
+    def test_recall_crystals_ranked(self, tmp_path):
+        from dynllm.personal_memory import PersonalMemoryStore
+        store = PersonalMemoryStore(db_path=tmp_path / "ranked2.db")
+        ids = []
+        for i in range(5):
+            cid = store.store_crystal(f"pattern_{i}", torch.randn(16), importance=0.1 * (i + 1))
+            ids.append(cid)
+        for i in range(len(ids) - 1):
+            store.link_crystals(ids[i], ids[i + 1], weight=1.0)
+        store.link_crystals(ids[-1], ids[0], weight=0.5)
+
+        ranked = store.recall_crystals_ranked(top_k=3)
+        assert len(ranked) == 3
+        assert "pagerank" in ranked[0]
+        assert ranked[0]["pagerank"] > 0
+        store.close()
+
+    def test_bump_access_count(self, tmp_path):
+        from dynllm.personal_memory import PersonalMemoryStore
+        store = PersonalMemoryStore(db_path=tmp_path / "bump.db")
+        cid = store.store_crystal("test", torch.randn(16))
+        store.bump_access_count(cid)
+        store.bump_access_count(cid)
+        crystals = store.recall_crystals(top_k=1)
+        assert crystals[0]["access_count"] == 2
+        store.close()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

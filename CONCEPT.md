@@ -2,7 +2,7 @@
 
 # Dynamical LLM Foundation — 개념 정본
 
-**버전**: v0.5.0 (Phase A–F base implementation)  
+**버전**: v0.6.0 (Phase A–G)  
 **코드네임**: 대뇌피질형 동역학 언어 엔진  
 **저자**: GNJz (Qquarts)  
 **위치**: `_staging/Dynamical_LLM_Foundation/`
@@ -28,7 +28,7 @@
 
 ## 현재 상태 (v0.5.0)
 
-**Phase A–F 기반 구조 구현. 기초 레이어 + 개인화 + 거버넌스 경계 계약까지 들어와 있다.**
+**Phase A–G 구현 완료. 기초 레이어 + 개인화 + 거버넌스 + 엔진 허브 통합.**
 
 ### 모듈 현황
 | 모듈 | 파일 | 상태 |
@@ -36,7 +36,7 @@
 | L0 Tokenizer | `tokenizer.py` | char-level + **byte-level** (260 vocab, 한국어 즉시 대응), 구현됨 |
 | L1 State Encoder | `state_encoder.py` | nn.Embedding, 구현됨 |
 | L2 Dynamics Core | `dynamics_core.py` | RK4 + VectorField + context coupling + timescale sep, 구현됨 |
-| L3 Memory (4-tier) | `memory.py` | WM(write gate+feedback) + Hebbian(selective) + Episodic, 구현됨 |
+| L3 Memory (4-tier) | `memory.py` | WM(write gate+feedback) + Hebbian(selective+**ranked**) + Episodic, 구현됨 |
 | L4 Readout | `readout.py` | 선형 판독, 구현됨 |
 | L5 Adaptation | `readout.py` | OnlineAdapter + ConsolidationScheduler, 구현됨 |
 | Stability | `stability.py` | TrustGate + RollbackPolicy + SafeStateBuffer + VelocityMonitor, 구현됨 |
@@ -44,10 +44,12 @@
 | 학습 | `train.py` | 코퍼스 + 체크포인트, 구현됨 |
 | 추론 | `generate.py` | 인터랙티브, 구현됨 |
 | 평가 | `evaluate.py` | perplexity + diversity + memory utilization, 구현됨 |
-| 개인 메모리 | `personal_memory.py` | SQLite 영구 저장 + crystal + injection, 구현됨 |
+| 개인 메모리 | `personal_memory.py` | SQLite 영구 저장 + crystal + injection + **PageRank recall**, 구현됨 |
 | 증류 브릿지 | `distill_bridge.py` | optional teacher → DynLLM 증류 경로, 구현됨 |
 | 시스템 거버넌스 | `system_bridge.py` | DynLLM ↔ Atom/Athena/Aton/Pharaoh 계약, 구현됨 |
-| 테스트 | `tests/` | torch 환경 **81 passed**, release_check 통과 |
+| **MemoryRank** | `memory_rank_adapter.py` | **PageRank 기억 재정렬** (MemoryGraph), Phase G 신규 |
+| **진단 어댑터** | `diagnostics.py` | **수렴/엔트로피/통합정보 진단**, Phase G 신규 |
+| 테스트 | `tests/` | torch 환경 **100 passed**, release_check 통과 |
 
 ---
 
@@ -91,13 +93,17 @@ Time-scale:  ẋ_fast = (−λx_fast + F_fast) / τ_fast
     │      ├─ VectorField (low-rank coupling + gates)         │
     │      ├─ ContextCoupling (multi-head window)             │
     │      └─ TimescaleSeparator (fast/slow)                  │
-    │  L3: Memory (4-tier)                                    │
+    │  L3: Memory (4-tier) + MemoryGraph ★ Phase G             │
     │      ├─ Working Memory (PFC + write gate + feedback)    │
-    │      ├─ Hebbian (selective recall, top-k sparse)        │
+    │      ├─ Hebbian (selective + PageRank ranked recall)    │
     │      └─ Episodic (sequence trajectory compression)      │
     │  L4: Readout                                            │
     │  L5: OnlineAdapter + ConsolidationScheduler             │
     │  Stability: TrustGate + RollbackPolicy + SafeStateBuf  │
+    │  Diagnostics ★ Phase G:                                 │
+    │      ├─ ConvergenceMonitor (← ConvergenceDynamics)      │
+    │      ├─ EntropyAnalyzer (← StatMech)                    │
+    │      └─ IntegrationDiagnostic (← IIT Φ)                │
     └─────────────────────────────────────────────────────────┘
 ```
 
@@ -136,6 +142,16 @@ Time-scale:  ẋ_fast = (−λx_fast + F_fast) / τ_fast
 - [x] standalone / nexus-connected 라우팅 모델
 - [x] 사용자 최종 결정 원칙 문서화
 
+### Phase G: 엔진 허브 통합 ✅
+- [x] MemoryGraph (PageRank 기반 기억 재정렬, `memory_rank_adapter.py`)
+- [x] ranked_selective_recall: cosine 후보 → PageRank 재정렬 → top-k
+- [x] PersonalMemoryStore: memory_links 테이블 + recall_crystals_ranked()
+- [x] ConvergenceMonitor (← ConvergenceDynamics_Engine): 학습 수렴 진단
+- [x] EntropyAnalyzer (← StatMech_Engine): 출력 분포 엔트로피 분석
+- [x] IntegrationDiagnostic (← IIT_Engine): 내부 상태 Φ 근사
+- [x] DynLLMDiagnostics 통합 퍼사드 + model.run_diagnostics()
+- [x] DynLLMConfig에 `use_memory_rank`, `use_diagnostics` 옵션 추가
+
 ---
 
 ## 개인화 루프
@@ -173,10 +189,12 @@ MemoryInjector → Hebbian/Episodic에 주입
 ## 인수인계 노트
 
 1. `dynllm/` 패키지: dynamics_core(★), memory, readout, stability, model이 핵심
-2. `personal_memory.py`: SQLite 영구 저장 + knowledge crystal + injection
+2. `personal_memory.py`: SQLite 영구 저장 + knowledge crystal + injection + **PageRank recall**
 3. `distill_bridge.py`: optional teacher 연결 → 증류 축적
 4. `evaluate.py`: perplexity, diversity, memory utilization 계산
 5. `system_bridge.py`: DynLLM이 상위 거버넌스로 올라갈 때의 최소 계약
-6. `train.py` 코퍼스·체크포인트, `generate.py` 추론
-7. 향후: 실제 한국어/영어 대규모 코퍼스, subword tokenizer, Atom connector, ATON Nexus 통합
-8. 현재 no-torch 환경 기준 `6 passed, 2 skipped` + 패키지 정합성/서명 검증 통과
+6. `memory_rank_adapter.py`: **MemoryGraph PageRank** — 기억 패턴 간 관계 그래프 + 중요도 재정렬
+7. `diagnostics.py`: **ConvergenceMonitor + EntropyAnalyzer + IntegrationDiagnostic** — 엔진 허브 진단 어댑터
+8. `train.py` 코퍼스·체크포인트, `generate.py` 추론
+9. 향후: 실제 한국어/영어 대규모 코퍼스, subword tokenizer, Atom connector, ATON Nexus 통합
+10. torch 환경 기준 **100 passed** + 패키지 정합성/서명 검증 통과

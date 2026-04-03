@@ -2,7 +2,26 @@
 
 # Dynamical LLM Foundation
 
-**버전:** `v0.5.0` — Phase A–F 기반 base implementation
+**버전:** `v0.6.0` — Phase A–G (Engine Hub 통합)
+
+### v0.6.0 업데이트 (Phase G)
+
+> **4개 엔진 허브 연결 + 19개 테스트 추가 (총 100 passed)**
+
+| 신규 모듈 | 연결 엔진 | 기능 |
+|-----------|----------|------|
+| `memory_rank_adapter.py` | MemoryRank (Cognitive_Kernel v1.1.0) | **PageRank 기반 기억 재정렬** — cosine 후보 → Personalized PageRank로 "구글링" 방식 기억 검색 |
+| `diagnostics.py` | ConvergenceDynamics (40_SPATIAL) | **학습 수렴 진단** — 수렴 차수, Lyapunov 추정, 안정성 판정 |
+| `diagnostics.py` | StatMech (40_SPATIAL) | **출력 엔트로피 분석** — Gibbs 엔트로피, 다양성/온도 추정 |
+| `diagnostics.py` | IIT (50_DIAGNOSTIC) | **통합 정보 Φ 근사** — 스펙트럼 갭, effective rank, 결합도 진단 |
+
+기존 파일 변경:
+- `memory.py`: `ranked_selective_recall()` + `get_pattern_dict()` 추가, `MemorySystem`에 MemoryGraph 옵션 연결
+- `personal_memory.py`: `memory_links` 테이블 + `recall_crystals_ranked()` (PageRank) + `bump_access_count()` 추가
+- `model.py`: `use_memory_rank` / `use_diagnostics` 설정 옵션 + `run_diagnostics()` 메서드 추가
+- 검증: **100 passed** (81→100), 서명 41파일 일치
+
+---
 
 > 이 저장소는 익숙한 입구로서 `LLM`이라는 이름을 쓰고 있지만, 구조적 본질은 `DLM (Dynamical Language Model)`에 더 가깝다.  
 > 즉 들어가는 문은 LLM이지만, 실제 코어는 상태 진화, 메모리, 적응을 중심으로 돌아가는 동역학 언어 시스템이다.
@@ -60,7 +79,7 @@ Transformer 구조를 복제하지 않는다.
 L0  Token Interface      문자/바이트 → 정수 ID (char 또는 byte 선택)
 L1  State Encoder        ID → 초기 상태벡터 x₀
 L2  Dynamics Core        ODE 진화: context coupling + time-scale separation + refined gating
-L3  Memory               단기(hidden x) · 작업기억(PFC) · 헤비안(장기 연상) · 에피소딕
+L3  Memory               단기(hidden x) · 작업기억(PFC) · 헤비안(장기+PageRank) · 에피소딕
 L4  Readout              상태 → vocabulary logits
 L5  Online Adaptation    fast/slow weights + trust gate + consolidation
 ```
@@ -77,6 +96,7 @@ L5  Online Adaptation    fast/slow weights + trust gate + consolidation
 | D | 온라인 적응 강화 | FastWeightDecay, StateAdapter, ConsolidationScheduler, RollbackPolicy |
 | E | 개인화 + 외부 브리지 준비 | PersonalMemoryStore, MemoryInjector, DistillBridge |
 | F | 시스템 거버넌스 연결 | `system_bridge.py`, Atom/Athena/Aton/Pharaoh 경계 계약 |
+| **G** | **엔진 허브 통합** | **MemoryGraph(PageRank), ConvergenceMonitor, EntropyAnalyzer, IntegrationDiagnostic** |
 
 위 표는 `구조적 base implementation` 기준이다.  
 즉 레이어와 경계 계약은 들어왔지만, 실사용 성숙도는 tokenizer 품질, 학습 기록, connector, benchmark 쪽이 아직 더 올라와야 한다.
@@ -99,7 +119,9 @@ Dynamical_LLM_Foundation/
 │   ├── personal_memory.py    # Phase E — PersonalMemoryStore, MemoryInjector
 │   ├── distill_bridge.py     # Phase E — DistillBuffer, DistillBridge (optional teacher path)
 │   ├── evaluate.py           # Phase E — perplexity, diversity, memory util
-│   └── system_bridge.py      # Phase F — DynLLM ↔ Atom/Athena/Aton/Pharaoh 거버넌스 계약
+│   ├── system_bridge.py      # Phase F — DynLLM ↔ Atom/Athena/Aton/Pharaoh 거버넌스 계약
+│   ├── memory_rank_adapter.py # Phase G — MemoryGraph (PageRank 기억 재정렬)
+│   └── diagnostics.py        # Phase G — Convergence/Entropy/Integration 진단
 ├── train.py
 ├── generate.py
 ├── examples/
@@ -191,6 +213,57 @@ print(model.count_parameters())
 
 ---
 
+## Phase G: 엔진 허브 통합
+
+`00_BRAIN` ENGINE_HUB의 4개 엔진을 DynLLM에 연결한다.
+
+### 1. MemoryRank (PageRank 기억 재정렬)
+
+기존 cosine 유사도 top-k 검색에 **Personalized PageRank 재정렬**을 추가.
+기억 패턴 간 관계 그래프를 자동 구축하고, 중요도·최근성·빈도를 반영해서 **"구글링"** 방식으로 기억을 검색한다.
+
+```python
+cfg = DynLLMConfig(
+    vocab_size=128, d_state=128,
+    use_memory=True, use_memory_rank=True,
+)
+model = DynLLM(cfg)
+# 학습/추론 시 자동으로 기억 패턴 간 에지 생성 + PageRank 재정렬
+```
+
+연결 엔진: `Cognitive_Kernel/engines/memoryrank` (v1.1.0)
+
+### 2. ConvergenceMonitor (수렴 안정성 진단)
+
+학습 loss 시계열을 분석해서 **수렴 차수, Lyapunov 추정, 안정성 판정**을 내린다.
+
+연결 엔진: `ConvergenceDynamics_Engine` (40_SPATIAL_LAYER)
+
+### 3. EntropyAnalyzer (출력 분포 엔트로피)
+
+토큰 분포의 **Gibbs 엔트로피**를 측정해서 다양성과 온도를 추정한다.
+
+연결 엔진: `StatMech_Engine` (40_SPATIAL_LAYER)
+
+### 4. IntegrationDiagnostic (통합 정보 Φ)
+
+내부 상태 결합 행렬의 **스펙트럼 분석**으로 통합 정보를 근사한다.
+
+연결 엔진: `IIT_Engine` (50_DIAGNOSTIC_LAYER)
+
+```python
+cfg = DynLLMConfig(
+    vocab_size=128, d_state=128,
+    use_memory=True, use_diagnostics=True,
+)
+model = DynLLM(cfg)
+# 학습 후:
+report = model.run_diagnostics(loss=2.5, logits=logits)
+# report["convergence"], report["entropy"], report["integration"]
+```
+
+---
+
 ## 외부 연결 준비
 
 Phase E 기준으로 `personal_memory.py`, `distill_bridge.py`가 들어와 있어서,
@@ -234,6 +307,10 @@ python3 scripts/release_check.py
 - personal memory / distill bridge / evaluate
 - memory recall rate
 - system bridge / governance contracts
+- **MemoryGraph (PageRank) / ranked selective recall**
+- **ConvergenceMonitor / EntropyAnalyzer / IntegrationDiagnostic**
+- **DynLLM with memory_rank + diagnostics end-to-end**
+- **PersonalMemoryStore ranked recall + access count**
 - package integrity
 
 - `memory recall rate`
@@ -245,9 +322,9 @@ python3 scripts/release_check.py
 
 | 구분 | 명령 | 의미 | 현재 결과 |
 |------|------|------|-----------|
-| torch full suite | `python3 scripts/release_check.py` 내부 pytest | torch 런타임에서의 전체 suite | **81 passed** |
+| torch full suite | `python3 scripts/release_check.py` 내부 pytest | torch 런타임에서의 전체 suite | **100 passed** |
 | release gate | `python3 scripts/release_check.py` | 패키지 정합성 + 서명 + 테스트 통합 체크 | `OK` |
-| 서명 검증 | `python3 scripts/verify_signature.py` | 39개 파일 해시 일치 여부 | `passed=39 failed=0 missing=0` |
+| 서명 검증 | `python3 scripts/verify_signature.py` | 41개 파일 해시 일치 여부 | `passed=41 failed=0 missing=0` |
 
 `torch`가 없는 환경에서는 runtime 테스트가 보수적으로 skip될 수 있다.
 

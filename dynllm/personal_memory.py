@@ -71,6 +71,17 @@ class PersonalMemoryStore:
                 access_count INTEGER DEFAULT 0
             )
         """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                src_crystal_id INTEGER NOT NULL,
+                dst_crystal_id INTEGER NOT NULL,
+                weight REAL DEFAULT 1.0,
+                link_type TEXT DEFAULT 'temporal',
+                FOREIGN KEY (src_crystal_id) REFERENCES crystals(id),
+                FOREIGN KEY (dst_crystal_id) REFERENCES crystals(id)
+            )
+        """)
         self._conn.commit()
 
     def log(self, interaction: Interaction) -> int:
@@ -104,6 +115,77 @@ class PersonalMemoryStore:
             {"id": r[0], "pattern": r[1], "importance": r[2], "access_count": r[3]}
             for r in rows
         ]
+
+    def link_crystals(self, src_id: int, dst_id: int, weight: float = 1.0, link_type: str = "temporal"):
+        """두 crystal 간 관계 에지 생성."""
+        self._conn.execute(
+            "INSERT INTO memory_links (src_crystal_id, dst_crystal_id, weight, link_type) VALUES (?, ?, ?, ?)",
+            (src_id, dst_id, weight, link_type),
+        )
+        self._conn.commit()
+
+    def recall_crystals_ranked(self, top_k: int = 10) -> list[dict]:
+        """
+        PageRank 기반 crystal 재정렬 조회.
+
+        memory_links 테이블의 에지로 그래프를 구성하고
+        MemoryGraph(PageRank)로 중요도를 재계산한다.
+        """
+        from .memory_rank_adapter import MemoryGraph, MemoryNodeAttrs
+
+        all_crystals = self._conn.execute(
+            "SELECT id, pattern, importance, access_count FROM crystals"
+        ).fetchall()
+        if not all_crystals:
+            return []
+
+        graph = MemoryGraph()
+        now = time.time()
+
+        for c in all_crystals:
+            cid, pattern, importance, access_count = c
+            created_row = self._conn.execute(
+                "SELECT created_at FROM crystals WHERE id = ?", (cid,)
+            ).fetchone()
+            created_at = created_row[0] if created_row and created_row[0] else now
+
+            age_hours = max((now - created_at) / 3600.0, 0.01)
+            recency = 1.0 / (1.0 + age_hours / 24.0)
+            freq = min(1.0, (access_count or 0) / 10.0)
+
+            graph.add_node(
+                f"crystal_{cid}",
+                MemoryNodeAttrs(recency=recency, frequency=freq, importance=importance),
+            )
+
+        links = self._conn.execute(
+            "SELECT src_crystal_id, dst_crystal_id, weight FROM memory_links"
+        ).fetchall()
+        for src, dst, w in links:
+            graph.add_edge(f"crystal_{src}", f"crystal_{dst}", w)
+
+        ranks = graph.compute_pagerank()
+
+        crystal_map = {c[0]: c for c in all_crystals}
+        scored = []
+        for cid, row in crystal_map.items():
+            pr = ranks.get(f"crystal_{cid}", 0.0)
+            scored.append((cid, row[1], row[2], row[3], pr))
+
+        scored.sort(key=lambda x: x[4], reverse=True)
+
+        return [
+            {"id": s[0], "pattern": s[1], "importance": s[2], "access_count": s[3], "pagerank": s[4]}
+            for s in scored[:top_k]
+        ]
+
+    def bump_access_count(self, crystal_id: int):
+        """crystal 접근 횟수 증가."""
+        self._conn.execute(
+            "UPDATE crystals SET access_count = access_count + 1 WHERE id = ?",
+            (crystal_id,),
+        )
+        self._conn.commit()
 
     def recent_interactions(self, limit: int = 20) -> list[dict]:
         rows = self._conn.execute(

@@ -2,7 +2,26 @@
 
 # Dynamical LLM Foundation
 
-**Version:** `v0.5.0` — Phase A–F base implementation
+**Version:** `v0.6.0` — Phase A–G (Engine Hub Integration)
+
+### v0.6.0 Update (Phase G)
+
+> **4 Engine Hub integrations + 19 new tests (100 passed total)**
+
+| New Module | Connected Engine | Capability |
+|-----------|-----------------|-----------|
+| `memory_rank_adapter.py` | MemoryRank (Cognitive_Kernel v1.1.0) | **PageRank memory re-ranking** — cosine candidates → Personalized PageRank "Googling" style memory search |
+| `diagnostics.py` | ConvergenceDynamics (40_SPATIAL) | **Training convergence diagnostics** — convergence order, Lyapunov estimate, stability verdict |
+| `diagnostics.py` | StatMech (40_SPATIAL) | **Output entropy analysis** — Gibbs entropy, diversity/temperature estimation |
+| `diagnostics.py` | IIT (50_DIAGNOSTIC) | **Integrated information Φ approximation** — spectral gap, effective rank, coupling assessment |
+
+Existing file changes:
+- `memory.py`: added `ranked_selective_recall()` + `get_pattern_dict()`, MemoryGraph option in `MemorySystem`
+- `personal_memory.py`: added `memory_links` table + `recall_crystals_ranked()` (PageRank) + `bump_access_count()`
+- `model.py`: added `use_memory_rank` / `use_diagnostics` config options + `run_diagnostics()` method
+- Validation: **100 passed** (81→100), signature 41 files matched
+
+---
 
 > The repository starts from the familiar `LLM` label, but its structural identity is closer to a `DLM (Dynamical Language Model)`.  
 > In other words, the entry point is LLM, while the actual core is a dynamics-driven language system built around state evolution, memory, and adaptation.
@@ -60,7 +79,7 @@ The difference is that it does not learn through a deep Transformer attention st
 L0  Token Interface      char/byte → integer ID (char or byte mode)
 L1  State Encoder        ID → initial state vector x₀
 L2  Dynamics Core        ODE evolution: context coupling + time-scale separation + refined gating
-L3  Memory               short-term (hidden x) · working (PFC) · Hebbian (long-term) · episodic
+L3  Memory               short-term (hidden x) · working (PFC) · Hebbian (long-term+PageRank) · episodic
 L4  Readout              state → vocabulary logits
 L5  Online Adaptation    fast/slow weights + trust gate + consolidation scheduler
 ```
@@ -77,6 +96,7 @@ L5  Online Adaptation    fast/slow weights + trust gate + consolidation schedule
 | D | Online adaptation | FastWeightDecay, StateAdapter, ConsolidationScheduler, RollbackPolicy |
 | E | Personalization + external bridge readiness | PersonalMemoryStore, MemoryInjector, DistillBridge |
 | F | System governance linkage | `system_bridge.py`, boundary contracts for Atom/Athena/Aton/Pharaoh |
+| **G** | **Engine Hub integration** | **MemoryGraph (PageRank), ConvergenceMonitor, EntropyAnalyzer, IntegrationDiagnostic** |
 
 This table describes the `base implementation` state.  
 The layer scaffolding is present, but practical maturity is still lower in tokenizer quality, training evidence, connectors, and benchmarks.
@@ -98,7 +118,9 @@ Dynamical_LLM_Foundation/
 │   ├── personal_memory.py    # Phase E — PersonalMemoryStore, MemoryInjector
 │   ├── distill_bridge.py     # Phase E — DistillBuffer, DistillBridge (optional teacher path)
 │   ├── evaluate.py           # Phase E — perplexity, diversity, memory utilization
-│   └── system_bridge.py      # Phase F — DynLLM ↔ Atom/Athena/Aton/Pharaoh governance contracts
+│   ├── system_bridge.py      # Phase F — DynLLM ↔ Atom/Athena/Aton/Pharaoh governance contracts
+│   ├── memory_rank_adapter.py # Phase G — MemoryGraph (PageRank memory re-ranking)
+│   └── diagnostics.py        # Phase G — Convergence/Entropy/Integration diagnostics
 ├── train.py
 ├── generate.py
 ├── examples/
@@ -219,9 +241,9 @@ Verification numbers should be read by environment:
 
 | Scope | Command | Meaning | Current result |
 |------|------|------|-----------|
-| torch full suite | internal pytest inside `release_check.py` | full runtime suite on torch-enabled environment | **81 passed** |
+| torch full suite | internal pytest inside `release_check.py` | full runtime suite on torch-enabled environment | **100 passed** |
 | release gate | `python3 scripts/release_check.py` | package identity + signature + tests | `OK` |
-| signature | `python3 scripts/verify_signature.py` | 39-file hash verification | `passed=39 failed=0 missing=0` |
+| signature | `python3 scripts/verify_signature.py` | 41-file hash verification | `passed=41 failed=0 missing=0` |
 
 Tests requiring `torch` may be skipped in environments where it is not installed.
 

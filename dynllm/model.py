@@ -7,11 +7,16 @@ Phase C+D:
   - WM feedback: 작업기억 요약이 dynamics에 재주입
   - RollbackPolicy: 이력 기반 자동 복원
   - ConsolidationScheduler: fast→slow 자동 통합
+
+Phase G: 엔진 허브 통합
+  - MemoryGraph: PageRank 기반 기억 재정렬
+  - DynLLMDiagnostics: 수렴/엔트로피/통합정보 진단
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -49,6 +54,10 @@ class DynLLMConfig:
     n_episodes: int = 16
     episode_len: int = 32
     selective_top_k: int = 3
+
+    # Phase G: Engine Hub 통합
+    use_memory_rank: bool = False
+    use_diagnostics: bool = False
 
     @property
     def dynamics_config(self) -> DynamicsConfig:
@@ -93,9 +102,22 @@ class DynLLM(nn.Module):
 
         self.encoder = StateEncoder(cfg.vocab_size, cfg.d_state)
         self.dynamics = DynamicsCore(cfg.dynamics_config)
-        self.memory = MemorySystem(cfg.memory_config) if cfg.use_memory else None
+
+        # Phase G: MemoryGraph
+        self._memory_graph = None
+        if cfg.use_memory_rank and cfg.use_memory:
+            from .memory_rank_adapter import MemoryGraph
+            self._memory_graph = MemoryGraph()
+
+        self.memory = MemorySystem(cfg.memory_config, graph=self._memory_graph) if cfg.use_memory else None
         self.readout = Readout(cfg.d_state, cfg.vocab_size)
         self.adapter = OnlineAdapter(cfg.d_state, cfg.vocab_size) if cfg.use_adaptation else None
+
+        # Phase G: Diagnostics
+        self._diagnostics = None
+        if cfg.use_diagnostics:
+            from .diagnostics import DynLLMDiagnostics
+            self._diagnostics = DynLLMDiagnostics()
 
     def forward(
         self,
@@ -225,6 +247,38 @@ class DynLLM(nn.Module):
             x, _ = rollback_policy.check_and_rollback(x, safe_buf)
 
         return generated
+
+    def run_diagnostics(self, loss: Optional[float] = None, logits: Optional[torch.Tensor] = None) -> dict:
+        """
+        Phase G: 엔진 허브 통합 진단.
+
+        학습 중 loss와 logits를 기록하면 수렴/엔트로피/통합정보를 추적한다.
+        """
+        if self._diagnostics is None:
+            return {"diagnostics": "disabled"}
+
+        if loss is not None:
+            self._diagnostics.record_loss(loss)
+
+        if logits is not None:
+            self._diagnostics.record_logits(logits)
+
+        coupling_matrix = None
+        try:
+            vf = self.dynamics.field
+            if hasattr(vf, "state_coupling"):
+                W = vf.state_coupling
+                if hasattr(W, "weight"):
+                    coupling_matrix = W.weight.detach()
+        except Exception:
+            pass
+
+        return self._diagnostics.full_diagnostic(coupling_matrix)
+
+    @property
+    def memory_graph(self):
+        """MemoryGraph 인스턴스 (없으면 None)."""
+        return self._memory_graph
 
     def count_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)

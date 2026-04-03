@@ -7,6 +7,10 @@ Phase C 고도화:
   3. Long-term (Hebbian): selective recall + 개별 저장
   4. Episodic: 시퀀스 단위 에피소드 기억 → 맥락 복원
 
+Phase G: MemoryRank 통합
+  - MemoryGraph 기반 PageRank 재정렬
+  - 저장 시 에지 자동 생성, 검색 시 중요도 재정렬
+
 Working Memory ↔ Dynamics Core 양방향:
   - read: dynamics가 working memory를 조회
   - write: dynamics가 working memory에 기록
@@ -16,6 +20,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -218,6 +223,70 @@ class HebbianMemory(nn.Module):
         gate = torch.sigmoid(self.selective_gate(gate_input))
         return self.readout_proj(torch.tanh(gate * retrieved))
 
+    def ranked_selective_recall(self, cue: torch.Tensor, graph) -> torch.Tensor:
+        """
+        PageRank-enhanced selective recall.
+
+        1차: cosine 유사도로 2×top_k 후보 추출
+        2차: MemoryGraph의 PageRank로 재정렬
+        3차: 최종 top_k 가중 합산
+
+        Args:
+            cue: [batch, d_state]
+            graph: MemoryGraph (memory_rank_adapter)
+        """
+        n_valid = min(self.n_stored.item(), self.capacity)
+        if n_valid == 0 or graph is None:
+            return self.selective_recall(cue)
+
+        valid_patterns = self.pattern_store[:n_valid]
+        cue_norm = F.normalize(cue, dim=-1)
+        pattern_norm = F.normalize(valid_patterns, dim=-1)
+        similarity = cue_norm @ pattern_norm.T
+
+        # 2× 후보 추출
+        n_candidates = min(self.top_k * 2, n_valid)
+        top_vals, top_idx = similarity.topk(n_candidates, dim=-1)
+
+        # 첫 번째 배치만으로 reranking (batch-agnostic)
+        first_vals = top_vals[0] if top_vals.dim() > 1 else top_vals
+        first_idx = top_idx[0] if top_idx.dim() > 1 else top_idx
+
+        candidate_ids = [f"heb_{i.item()}" for i in first_idx]
+        sim_scores = first_vals.tolist()
+
+        reranked = graph.rerank_candidates(candidate_ids, sim_scores)
+
+        for cid, _ in reranked[:self.top_k]:
+            graph.bump_frequency(cid)
+
+        # 재정렬된 순서로 top_k 패턴 선택
+        final_ids = [r[0] for r in reranked[:self.top_k]]
+        final_scores = torch.tensor(
+            [r[1] for r in reranked[:self.top_k]],
+            device=cue.device, dtype=cue.dtype,
+        )
+        final_weights = F.softmax(final_scores * 5.0, dim=-1)
+
+        final_indices = [int(fid.split("_")[1]) for fid in final_ids]
+        selected = valid_patterns[final_indices]
+
+        retrieved = (final_weights.unsqueeze(-1) * selected).sum(dim=0, keepdim=True)
+        if cue.shape[0] > 1:
+            retrieved = retrieved.expand(cue.shape[0], -1)
+
+        gate_input = torch.cat([cue, retrieved], dim=-1)
+        gate = torch.sigmoid(self.selective_gate(gate_input))
+        return self.readout_proj(torch.tanh(gate * retrieved))
+
+    def get_pattern_dict(self) -> Dict[str, torch.Tensor]:
+        """저장된 패턴을 {node_id: tensor} 형태로 반환."""
+        n_valid = min(self.n_stored.item(), self.capacity)
+        return {
+            f"heb_{i}": self.pattern_store[i]
+            for i in range(n_valid)
+        }
+
     def _batch_select(self, patterns: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
         B, K = indices.shape
         flat_idx = indices.reshape(-1)
@@ -336,14 +405,16 @@ class MemorySystem(nn.Module):
     4-tier 통합 메모리 시스템.
 
     Phase C: episodic memory 추가, selective recall, WM feedback.
+    Phase G: MemoryGraph PageRank 재정렬 옵션.
     """
 
-    def __init__(self, cfg: MemoryConfig):
+    def __init__(self, cfg: MemoryConfig, graph=None):
         super().__init__()
         self.cfg = cfg
         self.working = WorkingMemory(cfg)
         self.hebbian = HebbianMemory(cfg)
         self.episodic = EpisodicMemory(cfg)
+        self.graph = graph
 
         self.gate = nn.Linear(cfg.d_state * 3, cfg.d_state)
 
@@ -362,7 +433,10 @@ class MemorySystem(nn.Module):
         wm_read = self.working.read(x, wm_slots, wm_activations)
 
         if use_selective and self.hebbian.n_stored.item() > 0:
-            heb_read = self.hebbian.selective_recall(x)
+            if self.graph is not None and self.graph.n_nodes > 0:
+                heb_read = self.hebbian.ranked_selective_recall(x, self.graph)
+            else:
+                heb_read = self.hebbian.selective_recall(x)
         else:
             heb_read = self.hebbian.recall(x)
 
@@ -375,6 +449,11 @@ class MemorySystem(nn.Module):
 
         if store_to_hebbian:
             self.hebbian.store(x)
+            if self.graph is not None:
+                ptr = (self.hebbian.store_ptr.item() - 1) % self.hebbian.capacity
+                node_id = f"heb_{ptr}"
+                existing = self.hebbian.get_pattern_dict()
+                self.graph.register_pattern(node_id, x[0].detach(), existing)
 
         return memory_readout, new_slots, new_acts
 
