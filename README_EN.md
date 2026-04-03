@@ -212,20 +212,57 @@ Verification numbers should be read by environment:
 
 | Scope | Command | Meaning | Current result |
 |------|------|------|-----------|
-| smoke baseline | `python3 -m pytest -q tests` | conservative local baseline | `6 passed, 2 skipped` |
-| torch full suite | internal pytest inside `release_check.py` | broader runtime suite on torch-enabled environment | `81 passed` |
+| torch full suite | internal pytest inside `release_check.py` | full runtime suite on torch-enabled environment | **81 passed** |
 | release gate | `python3 scripts/release_check.py` | package identity + signature + tests | `OK` |
+| signature | `python3 scripts/verify_signature.py` | 39-file hash verification | `passed=39 failed=0 missing=0` |
 
-The `skip` case is the conservative behavior when `torch` is not available in the local environment.
+Tests requiring `torch` may be skipped in environments where it is not installed.
+
+---
+
+## Tokenizers
+
+Two modes are available:
+
+| Mode | Vocab | Multilingual | Notes |
+|------|-------|-------------|-------|
+| `DynTokenizer` (char) | corpus-dependent | requires `fit()` | simple, transparent |
+| `ByteTokenizer` (byte) | fixed 260 | immediate, all languages | no re-fitting needed |
+
+```bash
+# byte-level training
+python3 train.py --byte --epochs 20
+
+# byte-level generation
+python3 generate.py --byte "hello world"
+```
+
+---
+
+## Experiment Summary
+
+See [EXPERIMENT_LOG.md](EXPERIMENT_LOG.md) for full records.
+
+| Exp | Tokenizer | Corpus | Loss drop | Final ppl | Time (CPU) |
+|-----|-----------|--------|-----------|-----------|------------|
+| 1 | char(22) | EN 630 chars | 0.54 | 9.1 | 90s |
+| 2 | byte(260) | EN 630 chars | 1.26 | 7.5 | 77s |
+| 3 | byte(260) | KR 1845 bytes | 2.23 | 2.5 | 239s |
+
+Key observations:
+- The ODE dynamics core **does learn** — loss consistently decreases across all experiments
+- Damping (λ) **self-adapts** — reaches 0.44 for Korean (model finds its own stability point)
+- ByteTokenizer converges **2.3× faster** than char
+- Inference speed: **~1,170 tok/s** (CPU, memory off) / **~950 tok/s** (memory on)
 
 ---
 
 ## Limits
 
 - Not designed to match large-scale pretrained Transformer performance
-- Character-level tokenizer only — subword upgrade remains a next-step priority after the current base implementation
 - Long-horizon drift control is partially addressed via TrustGate + RollbackPolicy
 - Large corpus training not yet benchmarked
+- Byte-level Korean requires more epochs (learning valid UTF-8 3-byte sequences)
 - Current product value is closer to a personalizable dynamics-based language engine base than a finished commercial LLM
 
 ---

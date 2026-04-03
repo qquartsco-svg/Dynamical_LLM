@@ -4,18 +4,30 @@
 
 **버전:** `v0.5.0` — Phase A–F 기반 base implementation
 
+> 이 저장소는 익숙한 입구로서 `LLM`이라는 이름을 쓰고 있지만, 구조적 본질은 `DLM (Dynamical Language Model)`에 더 가깝다.  
+> 즉 들어가는 문은 LLM이지만, 실제 코어는 상태 진화, 메모리, 적응을 중심으로 돌아가는 동역학 언어 시스템이다.
+
 문서:
 - [사용설명서](USER_GUIDE.md)
+  - 누가 어떻게 써야 하는지
 - [로드맵](ROADMAP.md)
+  - 다음에 무엇을 만들어야 하는지
 - [오프라인 플레이북](OFFLINE_PERSONAL_LLM_PLAYBOOK.md)
+  - 외부 LLM 없이 어떻게 운영하는지
 - [시스템 연결도](SYSTEM_CONNECTION_MAP.md)
+  - Atom / Athena / Aton / Pharaoh / User 경계
 - [실험 로그](EXPERIMENT_LOG.md)
+  - 학습 조건, 샘플 출력, drift 관찰 기록
 
 Transformer 구조를 복제하지 않는다.  
 토큰이 들어올 때마다 내부 상태가 ODE를 따라 진화하고, 4단 메모리와 결합하며, 온라인으로 적응하는 **동역학 언어 모델의 기초 레이어**다.
 
 핵심 철학은 `외부 LLM이 끊겨도 살아남는 개인 대뇌피질 코어`다.
 대형 LLM API는 teacher나 보조 자료원으로 붙을 수 있지만, 이 엔진의 존재 이유는 외부 서비스가 없어도 개인이 자기 언어 코어를 계속 키워갈 수 있게 하는 데 있다.
+
+한 문장으로 요약하면:
+
+**이 엔진의 본선은 외부 LLM이 없어도 개인 코퍼스와 개인 메모리만으로 계속 성장 가능한 언어 코어를 만드는 것이다.**
 
 ---
 
@@ -217,6 +229,11 @@ python3 scripts/release_check.py
 - system bridge / governance contracts
 - package integrity
 
+- `memory recall rate`
+  - memory injection 이후 관련 기억 항목이 다시 생성으로 돌아오는 정도를 보는 거친 proxy
+- `system bridge / governance contracts`
+  - draft, confidence, memory sources, risk tags 같은 경계 계약의 정합성 검증
+
 검증 수치는 환경에 따라 다르게 읽어야 한다.
 
 | 구분 | 명령 | 의미 | 현재 결과 |
@@ -255,6 +272,11 @@ python3 train.py --byte --epochs 20
 # byte-level 생성
 python3 generate.py --byte "안녕하세요"
 ```
+
+권장 시작점:
+
+- 소규모 개인 코퍼스 + char-level: `20~50 epochs`
+- byte-level 한국어: UTF-8 3바이트 조합 학습이 필요하므로 char보다 더 길게 보고 `30~80 epochs`부터 관찰 시작
 
 ---
 
