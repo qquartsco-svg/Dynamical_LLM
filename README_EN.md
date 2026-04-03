@@ -45,6 +45,13 @@ In one sentence:
 | `m` | Memory readout signal (working + Hebbian) |
 | `θ` | Learnable vector field parameters |
 
+In short, this engine **does use deep learning**.  
+The difference is that it does not learn through a deep Transformer attention stack; it learns through a **trainable dynamical function plus memory hierarchy** that evolves internal state over time.
+
+- deep learning: update `θ` via gradient descent
+- language-model training: minimize next-token prediction loss
+- dynamical distinction: `token -> state impulse -> ODE evolution -> memory feedback -> next token`
+
 ---
 
 ## Architecture — 6 Layers

@@ -45,6 +45,13 @@ Transformer 구조를 복제하지 않는다.
 | `m` | working/hebbian memory 신호 |
 | `θ` | 벡터장 파라미터 (학습 가능) |
 
+짧게 말하면, 이 엔진은 **딥러닝이 적용된 언어모델**이다.  
+다만 Transformer처럼 attention stack을 깊게 쌓는 방식이 아니라, **학습 가능한 동역학 함수와 메모리 계층**을 통해 상태를 진화시키는 방식으로 학습한다.
+
+- 딥러닝: `θ`를 gradient descent로 업데이트
+- 언어모델 학습: 다음 토큰 예측 loss를 최소화
+- 동역학 차별점: `token -> state impulse -> ODE evolution -> memory feedback -> next token`
+
 ---
 
 ## 아키텍처 — 6개 레이어
